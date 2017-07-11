@@ -1,0 +1,32 @@
+{
+  "name": "objective-php/mysql-gateway",
+  "description": "Abstract MySQL Gateway",
+  "type": "library",
+  "keywords": [
+    "dao",
+    "database",
+    "objective php",
+    "mysql"
+  ],
+  "homepage": "https://github.com/objective-php/mysql-gateway",
+  "license": "GPL-3.0",
+  "authors": [
+    {
+      "name": "Gauthier 'Rusty' Delamarre",
+      "email": "gauthier@objective-php.org",
+      "role": "lead"
+    }
+  ],
+  "require": {
+    "php": ">=7.0",
+    "objective-php/gateway": "dev-master"
+  },
+  "require-dev": {
+    "codeception/codeception": "^2.1"
+  },
+  "autoload": {
+    "psr-4": {
+      "ObjectivePHP\\Gateway\\MySql\\": "src/"
+    }
+  }
+}
