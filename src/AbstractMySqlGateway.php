@@ -3,7 +3,9 @@
 namespace ObjectivePHP\Gateway\Mysql;
 
 use Aura\SqlQuery\AbstractQuery;
+use Aura\SqlQuery\Common\DeleteInterface;
 use Aura\SqlQuery\Common\SelectInterface;
+use Aura\SqlQuery\Common\UpdateInterface;
 use Aura\SqlQuery\Mysql\Insert;
 use Aura\SqlQuery\Mysql\Select;
 use Aura\SqlQuery\Mysql\Update;
@@ -25,45 +27,20 @@ use ObjectivePHP\Gateway\ResultSet\ResultSetInterface;
 abstract class AbstractMySqlGateway extends AbstractGateway
 {
     /**
-     * Link to master identifier
+     * @var Connection[]
      */
-    //const READ_WRITE = 1;
-
-    /**
-     * Link to slave identifier
-     */
-    //const READ_ONLY = 2;
-
-    /**
-     * @var \PDO
-     */
-    //protected $readLink;
-
-    /**
-     * @var \PDO
-     */
-    //protected $link;
-
-    /**
-     * @var \PDO
-     */
-    //protected $lastUsedLink;
-
-    /**
-     * @var Link[]
-     */
-    protected $links;
+    protected $connections;
 
     /**
      * Add a mysqli connection link
      *
-     * @param \mysqli    $link
+     * @param \mysqli    $connection
      * @param int        $method
      * @param callable[] $filters
      */
-    public function addLink(\mysqli $link, $method = self::ALL, callable ...$filters)
+    public function addConnection(\mysqli $connection, $method = self::ALL, callable ...$filters)
     {
-        $this->links[$method][] = new Link($link, ...$filters);
+        $this->connections[$method][] = new Connection($connection, ...$filters);
     }
 
     /**
@@ -73,22 +50,22 @@ abstract class AbstractMySqlGateway extends AbstractGateway
      *
      * @return \mysqli[]
      */
-    public function getLinks($method = self::ALL)
+    public function getConnections($method = self::ALL)
     {
-        $links = [];
+        $connections = [];
 
-        foreach ($this->links as $key => $pool) {
+        foreach ($this->connections as $key => $pool) {
             if ($method & $key) {
-                /** @var Link $link */
-                foreach ($pool as $link) {
-                    if ($link->runFilters()) {
-                        $links[] = $link->getLink();
+                /** @var Connection $connection */
+                foreach ($pool as $connection) {
+                    if ($connection->runFilters()) {
+                        $connections[] = $connection->getLink();
                     }
                 }
             }
         }
 
-        return $links;
+        return $connections;
     }
 
     /**
@@ -96,7 +73,17 @@ abstract class AbstractMySqlGateway extends AbstractGateway
      */
     public function fetchAll(ResultSetDescriptorInterface $descriptor) : ResultSetInterface
     {
-        // TODO: Implement fetchAll() method.
+        foreach ($this->getConnections(self::FETCH_ALL) as $connection) {
+            $query = (new Select(new Quoter("`", "`")))
+                ->cols(['*'])
+                ->from($descriptor->getCollectionName());
+
+            try {
+                return $this->query($query, $connection);
+            } catch (\Exception $e) {
+                continue;
+            }
+        }
     }
 
     /**
@@ -106,21 +93,21 @@ abstract class AbstractMySqlGateway extends AbstractGateway
     {
         $class = $this->getEntityClass() ? $this->getEntityClass() : $this->getDefaultEntityClass();
 
-        foreach ($this->getLinks(self::FETCH_ONE) as $link) {
-            /** @var EntityInterface $entity */
-            $entity = new $class;
+        /** @var EntityInterface $entity */
+        $entity = new $class;
 
-            $collection = $entity->getEntityCollection() != EntityInterface::DEFAULT_ENTITY_COLLECTION
-                ? $entity->getEntityCollection()
-                : $this->getDefaultEntityCollection();
+        $collection = $entity->getEntityCollection() != EntityInterface::DEFAULT_ENTITY_COLLECTION
+            ? $entity->getEntityCollection()
+            : $this->getDefaultEntityCollection();
 
+        foreach ($this->getConnections(self::FETCH_ONE) as $connection) {
             $query = (new Select(new Quoter("`", "`")))
                 ->cols(['*'])
                 ->from($collection)
                 ->where($entity->getEntityIdentifier() . ' = ?', $key);
 
             try {
-                $resultSet = $this->query($query, $link);
+                $resultSet = $this->query($query, $connection);
             } catch (\Exception $e) {
                 continue;
             }
@@ -140,8 +127,8 @@ abstract class AbstractMySqlGateway extends AbstractGateway
     {
         $result = true;
 
-        foreach ($this->getLinks(self::PERSIST) as $link) {
-            $link->begin_transaction();
+        foreach ($this->getConnections(self::PERSIST) as $connection) {
+            $connection->begin_transaction();
             foreach ($entities as $entity) {
                 $colsToRemove = [];
 
@@ -181,18 +168,18 @@ abstract class AbstractMySqlGateway extends AbstractGateway
                 }
 
                 try {
-                    $this->query($query, $link);
+                    $this->query($query, $connection);
                 } catch (\Exception $e) {
-                    $link->rollback();
+                    $connection->rollback();
                     throw $e;
                 }
 
                 if ($entity->isNew()) {
-                    $entity[$entity->getEntityIdentifier()] = $link->insert_id;
+                    $entity[$entity->getEntityIdentifier()] = $connection->insert_id;
                 }
             }
 
-            $result = $link->commit();
+            $result = $connection->commit();
         }
 
         return $result;
@@ -200,11 +187,11 @@ abstract class AbstractMySqlGateway extends AbstractGateway
 
     /**
      * @param  string|AbstractQuery $query
-     * @param \mysqli               $link
+     * @param \mysqli               $connection
      *
      * @return bool|ResultSetInterface
      */
-    public function query($query, \mysqli $link)
+    public function query($query, \mysqli $connection)
     {
         $rows = null;
 
@@ -214,10 +201,12 @@ abstract class AbstractMySqlGateway extends AbstractGateway
                 $sql = preg_replace(sprintf('/:%s/U', $name), '?', $sql);
             }
 
-            $stmt = $link->prepare($sql);
+            $stmt = $connection->prepare($sql);
 
             if (!$stmt) {
-                throw new PrepareException(sprintf('[%s] %s', $link->sqlstate, $link->error), $link->errno);
+                throw new PrepareException(
+                    sprintf('[%s] %s', $connection->sqlstate, $connection->error), $connection->errno
+                );
             }
 
             $type = '';
@@ -234,14 +223,16 @@ abstract class AbstractMySqlGateway extends AbstractGateway
             $result = $stmt->execute();
 
             if (!$result) {
-                throw new ExecuteException(sprintf('[%s] %s', $link->sqlstate, $link->error), $link->errno);
+                throw new ExecuteException(
+                    sprintf('[%s] %s', $connection->sqlstate, $connection->error), $connection->errno
+                );
             }
 
             if ($query instanceof SelectInterface) {
                 $rows = $stmt->get_result()->fetch_all(\MYSQLI_ASSOC);
             }
         } else {
-            $result = $link->query($query);
+            $result = $connection->query($query);
 
             if ($result instanceof \mysqli_result) {
                 $rows = $result->fetch_all(\MYSQLI_ASSOC);
@@ -318,54 +309,21 @@ abstract class AbstractMySqlGateway extends AbstractGateway
     }
 
     /**
-     * @return \PDO
+     * @param SelectInterface|UpdateInterface|DeleteInterface $query
+     * @param ResultSetDescriptorInterface                    $descriptor
      */
-    /*public function getLink()
+    protected function decorateQuery($query, ResultSetDescriptorInterface $descriptor)
     {
-        return $this->link;
-    }*/
+        if ($query) {
 
-    /**
-     * @param \PDO $link
-     *
-     * @return $this
-     * @throws Exception
-     */
-    /*public function setLink($link)
-    {
-        if (!$link instanceof \PDO) {
-            throw new Exception('Link is not a PDO link', Exception::INVALID_RESOURCE);
         }
 
-        $this->link = $link;
+        foreach ($descriptor->getFilters() as $filter)
 
-        return $this;
-    }*/
-
-    /**
-     * @return mixed
-     */
-    /*public function getReadLink()
-    {
-        return $this->readLink;
-    }*/
-
-    /**
-     * @param \PDO $readLink
-     *
-     * @return $this
-     * @throws Exception
-     */
-    /*public function setReadLink($readLink)
-    {
-        if (!$readLink instanceof \PDO) {
-            throw new Exception('Link is not a PDO link', Exception::INVALID_RESOURCE);
-        }
-
-        $this->readLink = $readLink;
-
-        return $this;
-    }*/
+        foreach ($descriptor->getAggregationRules() as $property => $aggregationType) {
+            //$query->
+        };
+    }
 
     /**
      * @param $query
@@ -379,30 +337,6 @@ abstract class AbstractMySqlGateway extends AbstractGateway
         } else {
             return md5($query);
         }
-    }*/
-
-    /**
-     * @param null $link
-     *
-     * @return string
-     */
-    /*public function getLastError($link = null)
-    {
-        $link = $link ?: $this->lastUsedLink;
-
-        return implode(' - ', $link->errorInfo());
-    }*/
-
-    /**
-     * @param null $link
-     *
-     * @return mixed
-     */
-    /*public function getLastErrorNo($link = null)
-    {
-        $link = $link ?: $this->lastUsedLink;
-
-        return $link->errorCode();
     }*/
 
     /**

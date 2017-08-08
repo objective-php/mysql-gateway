@@ -7,12 +7,12 @@ namespace ObjectivePHP\Gateway\Mysql;
  *
  * @package ObjectivePHP\Gateway\Mysql
  */
-class Link
+class Connection
 {
     /**
      * @var \mysqli
      */
-    protected $link;
+    protected $connection;
 
     /**
      * @var callable[]
@@ -27,33 +27,34 @@ class Link
      */
     public function __construct(\mysqli $link, callable ...$filters)
     {
-        $this->setLink($link);
+        $this->setConnection($link);
         $this->setFilters($filters);
     }
 
     /**
-     * Get Link
+     * Get Connection
      *
      * @return \mysqli
      */
-    public function getLink() : \mysqli
+    public function getConnection() : \mysqli
     {
-        return $this->link;
+        return $this->connection;
     }
 
     /**
-     * Set Link
+     * Set Connection
      *
-     * @param \mysqli $link
+     * @param \mysqli $connection
      *
      * @return $this
      */
-    public function setLink(\mysqli $link)
+    public function setConnection(\mysqli $connection)
     {
-        $this->link = $link;
+        $this->connection = $connection;
 
         return $this;
     }
+
 
     /**
      * Get Filters
