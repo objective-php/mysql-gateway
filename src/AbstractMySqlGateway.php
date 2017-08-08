@@ -1,7 +1,6 @@
 <?php
 
-namespace ObjectivePHP\Gateway;
-
+namespace ObjectivePHP\Gateway\Mysql;
 
 use Aura\SqlQuery\AbstractQuery;
 use Aura\SqlQuery\Common\SelectInterface;
@@ -9,9 +8,14 @@ use Aura\SqlQuery\Mysql\Insert;
 use Aura\SqlQuery\Mysql\Select;
 use Aura\SqlQuery\Mysql\Update;
 use Aura\SqlQuery\Quoter;
-use ObjectivePHP\Gateway\Entity\EntitySet;
-use ObjectivePHP\Gateway\Entity\ResultSetInterface;
-use ObjectivePHP\Gateway\Entity\PaginatedEntitySet;
+use ObjectivePHP\Gateway\AbstractGateway;
+use ObjectivePHP\Gateway\Entity\EntityInterface;
+use ObjectivePHP\Gateway\Exception\NoResultException;
+use ObjectivePHP\Gateway\Mysql\Exception\ExecuteException;
+use ObjectivePHP\Gateway\Mysql\Exception\PrepareException;
+use ObjectivePHP\Gateway\ResultSet\Descriptor\ResultSetDescriptorInterface;
+use ObjectivePHP\Gateway\ResultSet\ResultSet;
+use ObjectivePHP\Gateway\ResultSet\ResultSetInterface;
 
 /**
  * Class AbstractMySqlGateway
@@ -20,95 +24,239 @@ use ObjectivePHP\Gateway\Entity\PaginatedEntitySet;
  */
 abstract class AbstractMySqlGateway extends AbstractGateway
 {
-
     /**
      * Link to master identifier
      */
-    const READ_WRITE = 1;
+    //const READ_WRITE = 1;
 
     /**
      * Link to slave identifier
      */
-    const READ_ONLY = 2;
+    //const READ_ONLY = 2;
 
     /**
      * @var \PDO
      */
-    protected $readLink;
+    //protected $readLink;
 
     /**
      * @var \PDO
      */
-    protected $link;
+    //protected $link;
 
     /**
      * @var \PDO
      */
-    protected $lastUsedLink;
-
+    //protected $lastUsedLink;
 
     /**
-     * @return \PDO
+     * @var Link[]
      */
-    public function getLink()
+    protected $links;
+
+    /**
+     * Add a mysqli connection link
+     *
+     * @param \mysqli    $link
+     * @param int        $method
+     * @param callable[] $filters
+     */
+    public function addLink(\mysqli $link, $method = self::ALL, callable ...$filters)
     {
-        return $this->link;
+        $this->links[$method][] = new Link($link, ...$filters);
     }
 
     /**
-     * @param \PDO $link
+     * Returns mysqli connection links
      *
-     * @return $this
-     * @throws Exception
+     * @param int $method
+     *
+     * @return \mysqli[]
      */
-    public function setLink($link)
+    public function getLinks($method = self::ALL)
     {
-        if (!$link instanceof \PDO) {
-            throw new Exception('Link is not a PDO link', Exception::INVALID_RESOURCE);
+        $links = [];
+
+        foreach ($this->links as $key => $pool) {
+            if ($method & $key) {
+                /** @var Link $link */
+                foreach ($pool as $link) {
+                    if ($link->runFilters()) {
+                        $links[] = $link->getLink();
+                    }
+                }
+            }
         }
 
-        $this->link = $link;
-
-        return $this;
+        return $links;
     }
 
     /**
-     * @return mixed
+     * {@inheritdoc}
      */
-    public function getReadLink()
+    public function fetchAll(ResultSetDescriptorInterface $descriptor) : ResultSetInterface
     {
-        return $this->readLink;
+        // TODO: Implement fetchAll() method.
     }
 
     /**
-     * @param \PDO $readLink
-     *
-     * @return $this
-     * @throws Exception
+     * {@inheritdoc}
      */
-    public function setReadLink($readLink)
+    public function fetchOne($key) : EntityInterface
     {
-        if (!$readLink instanceof \PDO) {
-            throw new Exception('Link is not a PDO link', Exception::INVALID_RESOURCE);
+        $class = $this->getEntityClass() ? $this->getEntityClass() : $this->getDefaultEntityClass();
+
+        foreach ($this->getLinks(self::FETCH_ONE) as $link) {
+            /** @var EntityInterface $entity */
+            $entity = new $class;
+
+            $collection = $entity->getEntityCollection() != EntityInterface::DEFAULT_ENTITY_COLLECTION
+                ? $entity->getEntityCollection()
+                : $this->getDefaultEntityCollection();
+
+            $query = (new Select(new Quoter("`", "`")))
+                ->cols(['*'])
+                ->from($collection)
+                ->where($entity->getEntityIdentifier() . ' = ?', $key);
+
+            try {
+                $resultSet = $this->query($query, $link);
+            } catch (\Exception $e) {
+                continue;
+            }
+
+            if ($resultSet instanceof ResultSetInterface && $resultSet->count()) {
+                return array_pop($resultSet->toArray());
+            }
         }
 
-        $this->readLink = $readLink;
-
-        return $this;
+        throw new NoResultException(sprintf('Unable to find an entity of type "%s" for identifier "%s"', $class, $key));
     }
 
     /**
-     * @param AbstractQuery|string $query
-     * @param int $link
-     *
-     * @return EntitySet
-     * @throws Exception
-     * @throws \ObjectivePHP\Gateway\Exception
+     * {@inheritdoc}
      */
-    public function query($query, $link = self::READ_WRITE)
+    public function persist(EntityInterface ...$entities) : bool
     {
+        $result = true;
 
-        $result = null;
+        foreach ($this->getLinks(self::PERSIST) as $link) {
+            $link->begin_transaction();
+            foreach ($entities as $entity) {
+                $colsToRemove = [];
+
+                $collection = $entity->getEntityCollection() != EntityInterface::DEFAULT_ENTITY_COLLECTION
+                    ? $entity->getEntityCollection()
+                    : $this->getDefaultEntityCollection();
+
+                if ($entity->isNew()) {
+                    $query = (new Insert(new Quoter("`", "`")))
+                        ->into($collection);
+
+                    if (is_null($entity[$entity->getEntityIdentifier()])) {
+                        $colsToRemove[] = $entity->getEntityIdentifier();
+                    }
+                } else {
+                    $query = (new Update(new Quoter("`", "`")))
+                        ->table($collection);
+
+                    $colsToRemove[] = $entity->getEntityIdentifier();
+                }
+
+                $fields = array_diff($entity->getEntityFields(), $colsToRemove);
+
+                $query->cols($fields);
+
+                foreach ($fields as $field) {
+                    $value = $entity[$field];
+                    if ($value instanceof \DateTime) {
+                        $query->bindValue($field, $value->format('Y-m-d H:i:s'));
+                    } else {
+                        $query->bindValue($field, $entity[$field]);
+                    }
+                }
+
+                if (!$entity->isNew()) {
+                    $query->where($entity->getEntityIdentifier() . ' = ?', $entity[$entity->getEntityIdentifier()]);
+                }
+
+                try {
+                    $this->query($query, $link);
+                } catch (\Exception $e) {
+                    $link->rollback();
+                    throw $e;
+                }
+
+                if ($entity->isNew()) {
+                    $entity[$entity->getEntityIdentifier()] = $link->insert_id;
+                }
+            }
+
+            $result = $link->commit();
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param  string|AbstractQuery $query
+     * @param \mysqli               $link
+     *
+     * @return bool|ResultSetInterface
+     */
+    public function query($query, \mysqli $link)
+    {
+        $rows = null;
+
+        if ($query instanceof AbstractQuery) {
+            $sql = $query->getStatement();
+            foreach (array_keys($query->getBindValues()) as $name) {
+                $sql = preg_replace(sprintf('/:%s/U', $name), '?', $sql);
+            }
+
+            $stmt = $link->prepare($sql);
+
+            if (!$stmt) {
+                throw new PrepareException(sprintf('[%s] %s', $link->sqlstate, $link->error), $link->errno);
+            }
+
+            $type = '';
+            foreach ($query->getBindValues() as $value) {
+                if (is_bool($value)) {
+                    $type .= 'i';
+                } else {
+                    $type .= 's';
+                }
+            }
+
+            $stmt->bind_param($type, ...array_values($query->getBindValues()));
+
+            $result = $stmt->execute();
+
+            if (!$result) {
+                throw new ExecuteException(sprintf('[%s] %s', $link->sqlstate, $link->error), $link->errno);
+            }
+
+            if ($query instanceof SelectInterface) {
+                $rows = $stmt->get_result()->fetch_all(\MYSQLI_ASSOC);
+            }
+        } else {
+            $result = $link->query($query);
+
+            if ($result instanceof \mysqli_result) {
+                $rows = $result->fetch_all(\MYSQLI_ASSOC);
+            }
+        }
+
+        if (!is_null($rows)) {
+            $result = new ResultSet();
+            foreach ($rows as $row) {
+                $result->addEntities($this->entityFactory($row));
+            }
+        }
+
+        return $result;
+        /*$result = null;
         if ($this->shouldCache() && $this->loadFromCache($this->getQueryCacheId($query))) {
             return $this->loadFromCache($this->getQueryCacheId($query));
         }
@@ -166,66 +314,110 @@ abstract class AbstractMySqlGateway extends AbstractGateway
 
         $this->reset();
 
-        return $result;
+        return $result;*/
     }
+
+    /**
+     * @return \PDO
+     */
+    /*public function getLink()
+    {
+        return $this->link;
+    }*/
+
+    /**
+     * @param \PDO $link
+     *
+     * @return $this
+     * @throws Exception
+     */
+    /*public function setLink($link)
+    {
+        if (!$link instanceof \PDO) {
+            throw new Exception('Link is not a PDO link', Exception::INVALID_RESOURCE);
+        }
+
+        $this->link = $link;
+
+        return $this;
+    }*/
+
+    /**
+     * @return mixed
+     */
+    /*public function getReadLink()
+    {
+        return $this->readLink;
+    }*/
+
+    /**
+     * @param \PDO $readLink
+     *
+     * @return $this
+     * @throws Exception
+     */
+    /*public function setReadLink($readLink)
+    {
+        if (!$readLink instanceof \PDO) {
+            throw new Exception('Link is not a PDO link', Exception::INVALID_RESOURCE);
+        }
+
+        $this->readLink = $readLink;
+
+        return $this;
+    }*/
 
     /**
      * @param $query
      *
      * @return string
      */
-    protected function getQueryCacheId($query)
+    /*protected function getQueryCacheId($query)
     {
         if ($query instanceof AbstractQuery) {
             return md5($query->getStatement() . serialize($query->getBindValues()));
         } else {
             return md5($query);
         }
-    }
-
-    /**
-     * @param Select $query
-     *
-     * @return Select
-     * @throws Exception
-     */
-    protected function preparePagination(Select $query)
-    {
-        // handle pagination
-        if ($this->paginateNextQuery) {
-
-            $this->paginateCurrentQuery = true;
-
-            if (!$query instanceof Select) {
-                throw new Exception('Cannot paginate string queries. Please use aura/sqlquery.');
-            }
-
-
-            $currentPage = $this->currentPage;
-            $resultsPerPage = ($this->perPage ?: $this->defaultPerPage);
-
-            $offset = $currentPage !== null ? ($currentPage - 1) * $resultsPerPage : null;
-            $limit = $resultsPerPage;
-
-            $query->limit($limit)->offset($offset);
-        }
-
-        return $query;
-    }
+    }*/
 
     /**
      * @param null $link
      *
      * @return string
      */
-    public function getLastError($link = null)
+    /*public function getLastError($link = null)
     {
         $link = $link ?: $this->lastUsedLink;
 
         return implode(' - ', $link->errorInfo());
-    }
+    }*/
 
-    public function prepareResultSet($rows): ResultSetInterface
+    /**
+     * @param null $link
+     *
+     * @return mixed
+     */
+    /*public function getLastErrorNo($link = null)
+    {
+        $link = $link ?: $this->lastUsedLink;
+
+        return $link->errorCode();
+    }*/
+
+    /**
+     * @param null $link
+     *
+     * @return mixed
+     */
+    /*public function getLastInsertId($link = null)
+    {
+        $link = $link ?: $this->lastUsedLink;
+
+        return $link->lastInsertId();
+    }*/
+
+    /*public function prepareResultSet($rows): ResultSetInterface
     {
         $entities = $this->paginateCurrentQuery ? new PaginatedEntitySet() : new EntitySet();
         foreach ($rows as $row) {
@@ -242,75 +434,40 @@ abstract class AbstractMySqlGateway extends AbstractGateway
         }
 
         return $entities;
-    }
+    }*/
 
-    protected function reset()
-    {
-        parent::reset();
-
-        $this->paginateNextQuery = false;
-        $this->paginateCurrentQuery = false;
-        $this->currentPage = null;
-        $this->perPage = null;
-    }
-
-    /**
-     * @param null $link
-     *
-     * @return mixed
-     */
-    public function getLastErrorNo($link = null)
-    {
-        $link = $link ?: $this->lastUsedLink;
-
-        return $link->errorCode();
-    }
-
-    /**
-     * @param null $link
-     *
-     * @return mixed
-     */
-    public function getLastInsertId($link = null)
-    {
-        $link = $link ?: $this->lastUsedLink;
-
-        return $link->lastInsertId();
-    }
 
     /**
      * @param array $columns
      *
      * @return Select
      */
-    protected function select(array $columns = array('*'))
+    /*protected function select(array $columns = array('*'))
     {
         $select = new Select(new Quoter("`", "`"));
 
         $select->cols($columns);
 
         return $select;
-    }
+    }*/
 
     /**
      * @return Insert
      */
-    protected function insert()
+    /*protected function insert()
     {
         $insert = new Insert(new Quoter("`", "`"));
 
         return $insert;
-    }
+    }*/
 
     /**
      * @return Update
      */
-    protected function update()
+    /*protected function update()
     {
         $update = new Update(new Quoter("`", "`"));
 
         return $update;
-    }
-
-
+    }*/
 }

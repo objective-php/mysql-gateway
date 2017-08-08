@@ -19,14 +19,15 @@
   ],
   "require": {
     "php": ">=7.0",
-    "objective-php/gateway": "dev-master"
+    "objective-php/gateway": "dev-master",
+    "aura/sqlquery": "^2.7"
   },
   "require-dev": {
     "codeception/codeception": "^2.1"
   },
   "autoload": {
     "psr-4": {
-      "ObjectivePHP\\Gateway\\MySql\\": "src/"
+      "ObjectivePHP\\Gateway\\Mysql\\": "src/"
     }
   }
 }
