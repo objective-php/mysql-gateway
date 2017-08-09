@@ -19,7 +19,7 @@
   ],
   "require": {
     "php": ">=7.0",
-    "objective-php/gateway": "dev-master",
+    "objective-php/gateway": "^1.0.0",
     "aura/sqlquery": "^2.7"
   },
   "require-dev": {
@@ -27,7 +27,7 @@
   },
   "autoload": {
     "psr-4": {
-      "ObjectivePHP\\Gateway\\Mysql\\": "src/"
+      "ObjectivePHP\\Gateway\\MySql\\": "src/"
     }
   }
 }

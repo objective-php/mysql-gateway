@@ -1,12 +1,12 @@
 <?php
 
-namespace ObjectivePHP\Gateway\Mysql\Exception;
+namespace ObjectivePHP\Gateway\MySql\Exception;
 
 /**
  * Class PrepareException
  *
  * @package ObjectivePHP\Gateway\Mysql\Exception
  */
-class PrepareException extends \RuntimeException
+class PrepareException extends MySqlGatewayException
 {
 }
