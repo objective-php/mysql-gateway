@@ -7,26 +7,29 @@ use Aura\SqlQuery\Common\SelectInterface;
 use Aura\SqlQuery\Mysql\Insert;
 use Aura\SqlQuery\Mysql\Select;
 use Aura\SqlQuery\Mysql\Update;
+use Aura\SqlQuery\QueryInterface;
 use Aura\SqlQuery\Quoter;
-use ObjectivePHP\Gateway\AbstractGateway;
+use ObjectivePHP\Gateway\AbstractPaginableGateway;
 use ObjectivePHP\Gateway\Entity\EntityInterface;
 use ObjectivePHP\Gateway\Exception\NoResultException;
 use ObjectivePHP\Gateway\MySql\Exception\ExecuteException;
 use ObjectivePHP\Gateway\MySql\Exception\MySqlGatewayException;
 use ObjectivePHP\Gateway\MySql\Exception\PrepareException;
+use ObjectivePHP\Gateway\Projection\ProjectionInterface;
 use ObjectivePHP\Gateway\ResultSet\Descriptor\ResultSetDescriptorInterface;
+use ObjectivePHP\Gateway\ResultSet\PaginatedResultSet;
+use ObjectivePHP\Gateway\ResultSet\PaginatedResultSetInterface;
 use ObjectivePHP\Gateway\ResultSet\ResultSet;
 use ObjectivePHP\Gateway\ResultSet\ResultSetInterface;
-use ObjectivePHP\Gateway\Projection\ProjectionInterface;
 
 /**
  * Class AbstractMySqlGateway
  *
  * @package Fei\ApiServer\Gateway
  */
-abstract class AbstractMySqlGateway extends AbstractGateway
+abstract class AbstractMySqlGateway extends AbstractPaginableGateway
 {
- 
+
     /**
      * @var Link[]
      */
@@ -35,8 +38,8 @@ abstract class AbstractMySqlGateway extends AbstractGateway
     /**
      * Add a mysqli connection link
      *
-     * @param \mysqli    $link
-     * @param int        $method
+     * @param \mysqli $link
+     * @param int $method
      * @param callable[] $filters
      */
     public function registerLink(\mysqli $link, $method = self::ALL, callable ...$filters)
@@ -69,12 +72,11 @@ abstract class AbstractMySqlGateway extends AbstractGateway
         return $links;
     }
 
-    
 
     /**
      * {@inheritdoc}
      */
-    public function fetchOne($key) : EntityInterface
+    public function fetchOne($key): EntityInterface
     {
         $class = $this->getEntityClass() ? $this->getEntityClass() : $this->getDefaultEntityClass();
 
@@ -89,7 +91,7 @@ abstract class AbstractMySqlGateway extends AbstractGateway
             $query = (new Select(new Quoter("`", "`")))
                 ->cols(['*'])
                 ->from($collection)
-                ->where($entity->getKey() . ' = ?', $key);
+                ->where($entity->getEntityIdentifier() . ' = ?', $key);
 
             try {
                 $resultSet = $this->query($query, $link);
@@ -108,19 +110,19 @@ abstract class AbstractMySqlGateway extends AbstractGateway
     /**
      * {@inheritdoc}
      */
-    public function persist(EntityInterface ...$entities) : bool
+    public function persist(EntityInterface ...$entities): bool
     {
         $result = true;
 
         $links = $this->getLinks(self::PERSIST);
-        
-        if(!$links) throw new MySqlGatewayException('No link found to persist entity');
+
+        if (!$links) throw new MySqlGatewayException('No link found to persist entity');
         foreach ($links as $link) {
             $link->begin_transaction();
-            
+
             foreach ($entities as $entity) {
                 $colsToRemove = [];
-                
+
                 $collection = $entity->getEntityCollection() != EntityInterface::DEFAULT_ENTITY_COLLECTION
                     ? $entity->getEntityCollection()
                     : $this->getDefaultEntityCollection();
@@ -138,7 +140,7 @@ abstract class AbstractMySqlGateway extends AbstractGateway
 
                     $colsToRemove[] = $entity->getEntityIdentifier();
                 }
-                
+
                 // skip cols handled by delegates
                 $colsToRemove = array_merge($colsToRemove, array_keys($this->getDelegatePersisters()));
 
@@ -169,10 +171,9 @@ abstract class AbstractMySqlGateway extends AbstractGateway
                 if ($entity->isNew()) {
                     $entity[$entity->getEntityIdentifier()] = $link->insert_id;
                 }
-                
+
                 // trigger delegates
-                foreach($this->getDelegatePersisters() as $field => $persister)
-                {
+                foreach ($this->getDelegatePersisters() as $field => $persister) {
                     $persister($entity[$field], $entity, $this);
                 }
             }
@@ -185,89 +186,159 @@ abstract class AbstractMySqlGateway extends AbstractGateway
 
     /**
      * @param  string|AbstractQuery $query
-     * @param \mysqli               $link
+     * @param \mysqli $link
      *
      * @return bool|ResultSetInterface
      */
     public function query($query, \mysqli $link)
     {
         $rows = null;
-    
-        
+        $result = false;
+
         if ($query instanceof AbstractQuery) {
+
             $sql = $query->getStatement();
             foreach (array_keys($query->getBindValues()) as $name) {
                 $sql = preg_replace(sprintf('/:%s/U', $name), '?', $sql);
             }
-    
+
             $stmt = $link->prepare($sql);
-            
+
             if (!$stmt) {
-                throw new PrepareException(sprintf('[%s] %s', $link->sqlstate, $link->error), $link->errno);
+                throw new PrepareException(sprintf('[%s] %s (%s)', $link->sqlstate, $link->error, (string) $sql), $link->errno);
             }
-    
-            
-            $types = '';
-            foreach ($query->getBindValues() as $value) {
-                if (is_bool($value)) {
-                    $types .= 'i';
-                } else {
-                    $types .= 's';
+
+            $boundValues = $query->getBindValues();
+            if ($boundValues) {
+                $types = '';
+                foreach ($query->getBindValues() as $value) {
+                    if (is_bool($value)) {
+                        $types .= 'i';
+                    } else {
+                        $types .= 's';
+                    }
                 }
+
+                $stmt->bind_param($types, ...array_values($boundValues));
             }
-        
-            $stmt->bind_param($types, ...array_values($query->getBindValues()));
-        
+
             $result = $stmt->execute();
-        
+
             if (!$result) {
-                throw new ExecuteException(sprintf('[%s] %s', $link->sqlstate, $link->error), $link->errno);
+                throw new ExecuteException(sprintf('[%s] %s (%s)', $link->sqlstate, $link->error, (string) $query), $link->errno);
             }
-        
+
             if ($query instanceof SelectInterface) {
                 $rows = $stmt->get_result()->fetch_all(\MYSQLI_ASSOC);
+                $result = new ResultSet();
+                foreach ($rows as $row) {
+                    $result->addEntities($this->entityFactory($row));
+                }
             }
+
         } else {
-            $result = $link->query($query);
-        
-            if ($result instanceof \mysqli_result) {
-                $rows = $result->fetch_all(\MYSQLI_ASSOC);
+
+            $data = $link->query($query);
+
+            if ($data instanceof \mysqli_result) {
+                $result = new ResultSet();
+                while ($row = $data->fetch_assoc()) {
+                    $result->addEntities($this->entityFactory($row));
+                }
             }
         }
-    
-        if (!is_null($rows)) {
-            $result = new ResultSet();
-            foreach ($rows as $row) {
-                $result->addEntities($this->entityFactory($row));
-            }
-        }
-    
+
+
         return $result;
     }
-    
+
     public function fetch(ResultSetDescriptorInterface $resultSetDescriptor): ProjectionInterface
     {
         throw new MySqlGatewayException(sprintf('Method ' . __METHOD__ . ' is not implemented on this gateway'));
     }
-    
+
     public function delete(EntityInterface ...$entities)
     {
         throw new MySqlGatewayException(sprintf('Method ' . __METHOD__ . ' is not implemented on this gateway'));
     }
-    
+
     public function purge(ResultSetDescriptorInterface $descriptor)
     {
         throw new MySqlGatewayException(sprintf('Method ' . __METHOD__ . ' is not implemented on this gateway'));
     }
-    
+
     public function update(ResultSetDescriptorInterface $descriptor, $data)
     {
         throw new MySqlGatewayException(sprintf('Method ' . __METHOD__ . ' is not implemented on this gateway'));
     }
-    
+
     public function fetchAll(ResultSetDescriptorInterface $descriptor): ResultSetInterface
     {
-        throw new MySqlGatewayException(sprintf('Method ' . __METHOD__ . ' is not implemented on this gateway'));
+
+        $links = $this->getLinks(self::READ);
+        $query = new Select(new Quoter('`', '`'));
+        $this->hydrateQuery($query, $descriptor);
+
+        $result = $this->query($query, array_pop($links));
+
+        return $result;
     }
-    
+
+    /**
+     * @param Select $query
+     * @param ResultSetDescriptorInterface $resultSetDescriptor
+     * @return QueryInterface
+     */
+    protected function hydrateQuery(QueryInterface $query, ResultSetDescriptorInterface $resultSetDescriptor): QueryInterface
+    {
+        $quoter = new Quoter('`', '`');
+        $query->from($resultSetDescriptor->getCollectionName());
+        $query->cols(['*']);
+        foreach ($resultSetDescriptor->getFilters() as $filter) {
+
+            $operator = $filter['operator'];
+            $paramId = uniqid('param_');
+            $query->where($quoter->quoteName($filter['property']) . ' ' . $operator . ' :' . $paramId);
+            $query->bindValue($paramId, $filter['value']);
+        }
+
+        $size = 0;
+        if (($size = $resultSetDescriptor->getPageSize()) || ($size = $resultSetDescriptor->getSize())) {
+            $query->limit($size);
+        }
+
+        if ($page = $resultSetDescriptor->getPage()) {
+
+            $query->offset(($page - 1) * $size);
+        }
+
+        $orderBy = [];
+        foreach($resultSetDescriptor->getSort() as $property => $direction)
+        {
+            $orderBy[] = $property . ' ' . $direction;
+        }
+
+        $query->orderBy($orderBy);
+
+        return $query;
+    }
+
+    protected function buildResultSet(\mysqli_result $result): ResultSetInterface
+    {
+        $resultSet = ($this->paginateNextQuery) ? new PaginatedResultSet() : new ResultSet();
+
+        if ($resultSet instanceof PaginatedResultSetInterface) {
+            $resultSet->setCurrentPage($this->currentPage)->setPerPage($this->pageSize)->setTotal(
+                count($result)
+            );
+        }
+
+        /** @var Document $document */
+        foreach ($result->fetch_assoc() as $data) {
+            $entity = $this->entityFactory($data);
+            $resultSet[] = $entity;
+        }
+
+        return $resultSet;
+    }
 }
