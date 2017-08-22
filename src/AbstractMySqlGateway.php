@@ -303,12 +303,13 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
         }
 
         $size = 0;
-        if (($size = $resultSetDescriptor->getPageSize()) || ($size = $resultSetDescriptor->getSize())) {
+        if ($size = $resultSetDescriptor->getSize()) {
             $query->limit($size);
         }
 
         if ($page = $resultSetDescriptor->getPage()) {
-
+            $size = $resultSetDescriptor->getPageSize();
+            $query->limit($size);
             $query->offset(($page - 1) * $size);
         }
 
