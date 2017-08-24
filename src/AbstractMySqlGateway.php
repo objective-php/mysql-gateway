@@ -58,12 +58,14 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
     {
         $links = [];
 
-        foreach ($this->links as $key => $pool) {
-            if ($method & $key) {
-                /** @var Link $link */
-                foreach ($pool as $link) {
-                    if ($link->runFilters()) {
-                        $links[] = $link->getLink();
+        if (is_array($this->links)) {
+            foreach ($this->links as $key => $pool) {
+                if ($method & $key) {
+                    /** @var Link $link */
+                    foreach ($pool as $link) {
+                        if ($link->runFilters()) {
+                            $links[] = $link->getLink();
+                        }
                     }
                 }
             }
@@ -80,7 +82,13 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
     {
         $class = $this->getEntityClass() ? $this->getEntityClass() : $this->getDefaultEntityClass();
 
-        foreach ($this->getLinks(self::FETCH_ONE) as $link) {
+        $links = $this->getLinks(self::FETCH_ONE);
+
+        if (!$links) {
+            throw new MySqlGatewayException('No link found to fetch one entity');
+        }
+
+        foreach ($links as $link) {
             /** @var EntityInterface $entity */
             $entity = new $class;
 
@@ -276,6 +284,11 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
     {
 
         $links = $this->getLinks(self::READ);
+
+        if (!$links) {
+            throw new MySqlGatewayException('No link found to fetch entities');
+        }
+
         $query = new Select(new Quoter('`', '`'));
         $this->hydrateQuery($query, $descriptor);
 
