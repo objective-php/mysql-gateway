@@ -316,6 +316,7 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
         $orderBy = [];
         foreach($resultSetDescriptor->getSort() as $property => $direction)
         {
+            if(strpos($property, '.') === false) $property = $resultSetDescriptor->getCollectionName() . '.' . $property;
             $orderBy[] = $property . ' ' . $direction;
         }
 
