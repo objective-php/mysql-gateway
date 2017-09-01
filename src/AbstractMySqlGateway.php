@@ -3,6 +3,7 @@
 namespace ObjectivePHP\Gateway\MySql;
 
 use Aura\SqlQuery\AbstractQuery;
+use Aura\SqlQuery\Mysql\Delete;
 use Aura\SqlQuery\Common\SelectInterface;
 use Aura\SqlQuery\Mysql\Insert;
 use Aura\SqlQuery\Mysql\Select;
@@ -214,6 +215,10 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
                 foreach ($query->getBindValues() as $value) {
                     if (is_bool($value)) {
                         $types .= 'i';
+                    } elseif (is_int($value)) {
+                        $types .= 'i';
+                    } elseif (is_float($value)) {
+                        $types .= 'd';
                     } else {
                         $types .= 's';
                     }
@@ -257,21 +262,72 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
         throw new MySqlGatewayException(sprintf('Method ' . __METHOD__ . ' is not implemented on this gateway'));
     }
 
+    /**
+     * {@inheritdoc}
+     */
     public function delete(EntityInterface ...$entities)
     {
-        throw new MySqlGatewayException(sprintf('Method ' . __METHOD__ . ' is not implemented on this gateway'));
+        $result = true;
+
+        $links = $this->getLinks(self::PERSIST);
+
+        if (!$links) throw new MySqlGatewayException('No link found to delete entity');
+        foreach ($links as $link) {
+            $link->begin_transaction();
+
+            foreach ($entities as $entity) {
+                $collection = $entity->getEntityCollection() != EntityInterface::DEFAULT_ENTITY_COLLECTION
+                    ? $entity->getEntityCollection()
+                    : $this->getDefaultEntityCollection();
+
+                $query = (new Delete(new Quoter("`", "`")))->from($collection);
+
+                $query->where($entity->getEntityIdentifier() . '=:id')
+                    ->bindValue('id', $entity[$entity->getEntityIdentifier()]);
+
+                try {
+                    $this->query($query, $link);
+                } catch (\Exception $e) {
+                    $link->rollback();
+                }
+            }
+
+            $result = $link->commit();
+        }
+
+        return $result;
     }
 
+    /**
+     * @inheritdoc
+     */
     public function purge(ResultSetDescriptorInterface $descriptor)
     {
         throw new MySqlGatewayException(sprintf('Method ' . __METHOD__ . ' is not implemented on this gateway'));
     }
 
+    /**
+     * @inheritdoc
+     */
     public function update(ResultSetDescriptorInterface $descriptor, $data)
     {
-        throw new MySqlGatewayException(sprintf('Method ' . __METHOD__ . ' is not implemented on this gateway'));
+        $links = $this->getLinks(self::UPDATE);
+        $query = new Update(new Quoter('`', '`'));
+
+        foreach($data as $key => $value) {
+            $query->set($key, ':value_' . $key);
+            $query->bindValue('value_' . $key, $value);
+        }
+
+        $this->hydrateQuery($query, $descriptor);
+        $result = $this->query($query, array_pop($links));
+
+        return $result;
     }
 
+    /**
+     * @inheritdoc
+     */
     public function fetchAll(ResultSetDescriptorInterface $descriptor): ResultSetInterface
     {
 
@@ -292,8 +348,14 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
     protected function hydrateQuery(QueryInterface $query, ResultSetDescriptorInterface $resultSetDescriptor): QueryInterface
     {
         $quoter = new Quoter('`', '`');
-        $query->from($resultSetDescriptor->getCollectionName());
-        $query->cols(['*']);
+
+        if ($query instanceof Update) {
+            $query->table($resultSetDescriptor->getCollectionName());
+        } else {
+            $query->from($resultSetDescriptor->getCollectionName());
+            $query->cols(['*']);
+        }
+
         foreach ($resultSetDescriptor->getFilters() as $filter) {
 
             $operator = $filter['operator'];
