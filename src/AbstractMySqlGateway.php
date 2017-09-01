@@ -298,7 +298,8 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
 
             $operator = $filter['operator'];
             $paramId = uniqid('param_');
-            $query->where($quoter->quoteName($filter['property']) . ' ' . $operator . ' :' . $paramId);
+            $property = strpos($filter['property'], '.') === false ?  $resultSetDescriptor->getCollectionName() . '.' . $filter['property'] : $filter['property'];
+            $query->where($quoter->quoteName($property) . ' ' . $operator . ' :' . $paramId);
             $query->bindValue($paramId, $filter['value']);
         }
 
