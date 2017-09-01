@@ -293,7 +293,7 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
     {
         $quoter = new Quoter('`', '`');
         $query->from($resultSetDescriptor->getCollectionName());
-        $query->cols(['*']);
+	$query->cols([$resultSetDescriptor->getCollectionName() . '.*']);
         foreach ($resultSetDescriptor->getFilters() as $filter) {
 
             $operator = $filter['operator'];
