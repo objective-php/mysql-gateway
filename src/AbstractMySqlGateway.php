@@ -355,12 +355,13 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
             $query->from($resultSetDescriptor->getCollectionName());
             $query->cols(['*']);
         }
-
+      
         foreach ($resultSetDescriptor->getFilters() as $filter) {
 
             $operator = $filter['operator'];
             $paramId = uniqid('param_');
-            $query->where($quoter->quoteName($filter['property']) . ' ' . $operator . ' :' . $paramId);
+            $property = strpos($filter['property'], '.') === false ?  $resultSetDescriptor->getCollectionName() . '.' . $filter['property'] : $filter['property'];
+            $query->where($quoter->quoteName($property) . ' ' . $operator . ' :' . $paramId);
             $query->bindValue($paramId, $filter['value']);
         }
 
@@ -378,6 +379,7 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
         $orderBy = [];
         foreach($resultSetDescriptor->getSort() as $property => $direction)
         {
+            if(strpos($property, '.') === false) $property = $resultSetDescriptor->getCollectionName() . '.' . $property;
             $orderBy[] = $property . ' ' . $direction;
         }
 
