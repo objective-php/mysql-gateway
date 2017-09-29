@@ -30,7 +30,6 @@ use ObjectivePHP\Gateway\ResultSet\ResultSetInterface;
  */
 abstract class AbstractMySqlGateway extends AbstractPaginableGateway
 {
-
     /**
      * @var Link[]
      */
@@ -117,7 +116,10 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
 
         $links = $this->getLinks(self::PERSIST);
 
-        if (!$links) throw new MySqlGatewayException('No link found to persist entity');
+        if (!$links) {
+            throw new MySqlGatewayException('No link found to persist entity');
+        }
+
         foreach ($links as $link) {
             $link->begin_transaction();
 
@@ -186,10 +188,15 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
     }
 
     /**
+     * Perform a query
+     *
      * @param  string|AbstractQuery $query
-     * @param \mysqli $link
+     * @param \mysqli               $link
      *
      * @return bool|ResultSetInterface
+     *
+     * @throws ExecuteException
+     * @throws PrepareException
      */
     public function query($query, \mysqli $link)
     {
@@ -197,16 +204,18 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
         $result = false;
 
         if ($query instanceof AbstractQuery) {
-
             $sql = $query->getStatement();
             foreach (array_keys($query->getBindValues()) as $name) {
-                $sql = preg_replace(sprintf('/:%s/U', $name), '?', $sql);
+                $sql = preg_replace(sprintf('/:%s/U', $name), '?', $sql, 1);
             }
 
             $stmt = $link->prepare($sql);
 
             if (!$stmt) {
-                throw new PrepareException(sprintf('[%s] %s (%s)', $link->sqlstate, $link->error, (string) $sql), $link->errno);
+                throw new PrepareException(
+                    sprintf('[%s] %s (%s)', $link->sqlstate, $link->error, (string) $sql),
+                    $link->errno
+                );
             }
 
             $boundValues = $query->getBindValues();
@@ -215,9 +224,9 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
                 foreach ($query->getBindValues() as $value) {
                     if (is_bool($value)) {
                         $types .= 'i';
-                    } elseif (is_int($value)) {
+                    } elseif (is_int($value) || (is_string($value) && preg_match('/^(\d+)$/', $value))) {
                         $types .= 'i';
-                    } elseif (is_float($value)) {
+                    } elseif (is_numeric($value)) {
                         $types .= 'd';
                     } else {
                         $types .= 's';
@@ -230,7 +239,10 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
             $result = $stmt->execute();
 
             if (!$result) {
-                throw new ExecuteException(sprintf('[%s] %s (%s)', $link->sqlstate, $link->error, (string) $query), $link->errno);
+                throw new ExecuteException(
+                    sprintf('[%s] %s (%s)', $link->sqlstate, $link->error, (string) $query),
+                    $link->errno
+                );
             }
 
             if ($query instanceof SelectInterface) {
@@ -242,7 +254,6 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
             }
 
         } else {
-
             $data = $link->query($query);
 
             if ($data instanceof \mysqli_result) {
@@ -253,10 +264,12 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
             }
         }
 
-
         return $result;
     }
 
+    /**
+     * @inheritdoc
+     */
     public function fetch(ResultSetDescriptorInterface $resultSetDescriptor): ProjectionInterface
     {
         throw new MySqlGatewayException(sprintf('Method ' . __METHOD__ . ' is not implemented on this gateway'));
@@ -269,9 +282,12 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
     {
         $result = true;
 
-        $links = $this->getLinks(self::PERSIST);
+        $links = $this->getLinks(self::DELETE);
 
-        if (!$links) throw new MySqlGatewayException('No link found to delete entity');
+        if (!$links) {
+            throw new MySqlGatewayException('No link found to delete entity');
+        }
+
         foreach ($links as $link) {
             $link->begin_transaction();
 
@@ -314,7 +330,7 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
         $links = $this->getLinks(self::UPDATE);
         $query = new Update(new Quoter('`', '`'));
 
-        foreach($data as $key => $value) {
+        foreach ($data as $key => $value) {
             $query->set($key, ':value_' . $key);
             $query->bindValue('value_' . $key, $value);
         }
@@ -330,7 +346,6 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
      */
     public function fetchAll(ResultSetDescriptorInterface $descriptor): ResultSetInterface
     {
-
         $links = $this->getLinks(self::READ);
         $query = new Select(new Quoter('`', '`'));
         $this->hydrateQuery($query, $descriptor);
@@ -341,12 +356,15 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
     }
 
     /**
-     * @param Select $query
+     * @param Select|QueryInterface        $query
      * @param ResultSetDescriptorInterface $resultSetDescriptor
+     *
      * @return QueryInterface
      */
-    protected function hydrateQuery(QueryInterface $query, ResultSetDescriptorInterface $resultSetDescriptor): QueryInterface
-    {
+    protected function hydrateQuery(
+        QueryInterface $query,
+        ResultSetDescriptorInterface $resultSetDescriptor
+    ): QueryInterface {
         $quoter = new Quoter('`', '`');
 
         if ($query instanceof Update) {
@@ -355,12 +373,13 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
             $query->from($resultSetDescriptor->getCollectionName());
             $query->cols(['*']);
         }
-      
-        foreach ($resultSetDescriptor->getFilters() as $filter) {
 
+        foreach ($resultSetDescriptor->getFilters() as $filter) {
             $operator = $filter['operator'];
             $paramId = uniqid('param_');
-            $property = strpos($filter['property'], '.') === false ?  $resultSetDescriptor->getCollectionName() . '.' . $filter['property'] : $filter['property'];
+            $property = strpos($filter['property'], '.') === false
+                ? $resultSetDescriptor->getCollectionName() . '.' . $filter['property']
+                : $filter['property'];
             $query->where($quoter->quoteName($property) . ' ' . $operator . ' :' . $paramId);
             $query->bindValue($paramId, $filter['value']);
         }
@@ -377,9 +396,11 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
         }
 
         $orderBy = [];
-        foreach($resultSetDescriptor->getSort() as $property => $direction)
-        {
-            if(strpos($property, '.') === false) $property = $resultSetDescriptor->getCollectionName() . '.' . $property;
+        foreach ($resultSetDescriptor->getSort() as $property => $direction) {
+            if (strpos($property, '.') === false) {
+                $property = $resultSetDescriptor->getCollectionName() . '.' . $property;
+            }
+
             $orderBy[] = $property . ' ' . $direction;
         }
 
@@ -398,7 +419,6 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
             );
         }
 
-        /** @var Document $document */
         foreach ($result->fetch_assoc() as $data) {
             $entity = $this->entityFactory($data);
             $resultSet[] = $entity;
