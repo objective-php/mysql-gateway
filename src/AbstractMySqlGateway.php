@@ -130,11 +130,13 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
                     ? $entity->getEntityCollection()
                     : $this->getDefaultEntityCollection();
 
+                $extractedData = $this->getHydrator()->extract($entity);
+
                 if ($entity->isNew()) {
                     $query = (new Insert(new Quoter("`", "`")))
                         ->into($collection);
 
-                    if (is_null($entity[$entity->getEntityIdentifier()])) {
+                    if (is_null($extractedData[$entity->getEntityIdentifier()])) {
                         $colsToRemove[] = $entity->getEntityIdentifier();
                     }
                 } else {
@@ -147,23 +149,21 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
                 // skip cols handled by delegates
                 $colsToRemove = array_merge($colsToRemove, array_keys($this->getDelegatePersisters()));
 
-                $fields = array_diff($entity->getEntityFields(), $colsToRemove);
+                $fields = array_diff(array_keys($extractedData), $colsToRemove);
 
                 $query->cols($fields);
 
                 foreach ($fields as $field) {
-                    $value = $entity[$field];
+                    $value = $extractedData[$field];
                     if ($value instanceof \DateTime) {
                         $query->bindValue($field, $value->format('Y-m-d H:i:s'));
                     } else {
-                        $query->bindValue($field, $entity[$field]);
+                        $query->bindValue($field, $value);
                     }
                 }
-
                 if (!$entity->isNew()) {
-                    $query->where($entity->getEntityIdentifier() . ' = ?', $entity[$entity->getEntityIdentifier()]);
+                    $query->where($entity->getEntityIdentifier() . ' = ?', $extractedData[$entity->getEntityIdentifier()]);
                 }
-
                 try {
                     $this->query($query, $link);
                 } catch (\Exception $e) {
