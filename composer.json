@@ -29,5 +29,10 @@
     "psr-4": {
       "ObjectivePHP\\Gateway\\MySql\\": "src/"
     }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Test\\ObjectivePHP\\Gateway\\MySql\\": "tests/unit/"
+    }
   }
 }
