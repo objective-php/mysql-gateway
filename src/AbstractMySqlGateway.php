@@ -188,7 +188,7 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
     }
 
     /**
-     * Perform a query
+     * Performs a query
      *
      * @param  string|AbstractQuery $query
      * @param \mysqli               $link
@@ -205,12 +205,18 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
 
         if ($query instanceof AbstractQuery) {
             $sql = $query->getStatement();
-            foreach (array_keys($query->getBindValues()) as $name) {
-                $sql = preg_replace(sprintf('/:%s/U', $name), '?', $sql, 1);
+
+            foreach ($query->getBindValues() as $name => $bound) {
+                if (is_array($bound)) {
+                    $sql = preg_replace(sprintf('/:%s/U', $name),
+                        '(' . implode(',', array_fill(0, count($bound), '?'))   .')',
+                        $sql, 1);
+                } else {
+                    $sql = preg_replace(sprintf('/:%s/U', $name), '?', $sql, 1);
+                }
             }
 
             $stmt = $link->prepare($sql);
-
             if (!$stmt) {
                 throw new PrepareException(
                     sprintf('[%s] %s (%s)', $link->sqlstate, $link->error, (string) $sql),
@@ -218,10 +224,19 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
                 );
             }
 
-            $boundValues = $query->getBindValues();
+            $boundValues = [];
+            foreach ($query->getBindValues() as $name => $value) {
+                if (is_array($value)) {
+                    foreach ($value as $valueIndex => $valueBind) {
+                        $boundValues[$name . '_' . $valueIndex] = $valueBind;
+                    }
+                } else {
+                    $boundValues[$name] = $value;
+                }
+            }
             if ($boundValues) {
                 $types = '';
-                foreach ($query->getBindValues() as $value) {
+                foreach ($boundValues as $value) {
                     if (is_bool($value)) {
                         $types .= 'i';
                     } elseif (is_int($value) || (is_string($value) && preg_match('/^(\d+)$/', $value))) {
@@ -232,7 +247,6 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
                         $types .= 's';
                     }
                 }
-
                 $stmt->bind_param($types, ...array_values($boundValues));
             }
 
@@ -252,7 +266,6 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
                     $result->addEntities($this->entityFactory($row));
                 }
             }
-
         } else {
             $data = $link->query($query);
 
