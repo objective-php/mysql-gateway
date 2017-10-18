@@ -31,7 +31,7 @@ use ObjectivePHP\Gateway\ResultSet\ResultSetInterface;
 abstract class AbstractMySqlGateway extends AbstractPaginableGateway
 {
     /**
-     * @var Link[]
+     * @var Link[][]
      */
     protected $links;
 
@@ -59,7 +59,8 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
         $links = [];
 
         foreach ($this->links as $key => $pool) {
-            if ($method & $key) {
+            // a PERSIST-only link won't be selected for general WRITE
+            if ($method & $key && $key >= $method) {
                 /** @var Link $link */
                 foreach ($pool as $link) {
                     if ($link->runFilters()) {
