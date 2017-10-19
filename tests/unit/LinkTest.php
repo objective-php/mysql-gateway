@@ -7,10 +7,8 @@ use ObjectivePHP\Gateway\MySql\Link;
 
 class LinkTest extends Unit
 {
-    public function createMysqlMock()
-    {
-        return $this->getMockBuilder(\mysqli::class)->disableOriginalConstructor()->getMock();;
-    }
+    use MySqlGatewayTestTrait;
+
     /**
      * @param callable[] ...$filters
      * @dataProvider filtersProvider
@@ -62,36 +60,5 @@ class LinkTest extends Unit
             'falseTrueFilter' => [$filters['falseTrueFilter'], false],
         ];
         return $expected;
-    }
-
-    /**
-     * @return array
-     */
-    public function filtersProvider() : array
-    {
-        $trueFilter = function() {
-            return true;
-        };
-        $falseFilter = function() {
-            return false;
-        };
-        return [
-            'noFilters' => [
-            ],
-            'trueFilter' => [
-                $trueFilter,
-            ],
-            'falseFilter' => [
-                $falseFilter,
-            ],
-            'trueFalseFilter' => [
-                $trueFilter,
-                $falseFilter,
-            ],
-            'falseTrueFilter' => [
-                $falseFilter,
-                $trueFilter,
-            ],
-        ];
     }
 }
