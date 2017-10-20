@@ -3,8 +3,12 @@
 namespace Test\ObjectivePHP\Gateway\MySql;
 
 use Codeception\Test\Unit;
+use ObjectivePHP\Gateway\MySql\Exception\MySqlGatewayException;
 use ObjectivePHP\Gateway\MySql\Link;
 use ObjectivePHP\Gateway\MySql\AbstractMySqlGateway;
+use ObjectivePHP\Gateway\ResultSet\Descriptor\ResultSetDescriptor;
+use ObjectivePHP\Gateway\ResultSet\ResultSet;
+use ObjectivePHP\Gateway\ResultSet\ResultSetInterface;
 
 class AbstractMySqlGatewayTest extends Unit
 {
@@ -205,5 +209,40 @@ class AbstractMySqlGatewayTest extends Unit
     public function testGetLinks($method = AbstractMySqlGateway::ALL, $instance, array $foundLinks = [])
     {
         $this->assertSame($foundLinks, $this->extractIdentifiers($instance->getLinks($method)));
+    }
+
+    public function testFetch()
+    {
+        $this->expectException(MySqlGatewayException::class);
+        $this->createAbstractMySqlGateway()->fetch(new ResultSetDescriptor(''));
+    }
+
+    public function testPurge()
+    {
+        $this->expectException(MySqlGatewayException::class);
+        $this->createAbstractMySqlGateway()->purge(new ResultSetDescriptor(''));
+    }
+
+    public function testFetchAll()
+    {
+
+        $queryMockedGateway = $this->getMockBuilder(AbstractMySqlGateway::class)
+            ->setMethods(['query'])
+            ->getMock();
+
+        /**
+         * @var AbstractMySqlGateway $queryMockedGateway
+         */
+        $queryMockedGateway->registerLink($this->createMysqlMock(), AbstractMySqlGateway::READ);
+
+        $baseRDS = (new ResultSetDescriptor('elements'))
+            ->addFilter('external_reference', 42);
+
+        $queryMockedGateway
+            ->expects($this->once())
+            ->method('query')
+            ->willReturn(new ResultSet());
+
+        $this->assertInstanceOf(ResultSetInterface::class, $queryMockedGateway->fetchAll($baseRDS));
     }
 }
