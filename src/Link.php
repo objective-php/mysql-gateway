@@ -1,11 +1,11 @@
 <?php
 
-namespace ObjectivePHP\Gateway\Mysql;
+namespace ObjectivePHP\Gateway\MySql;
 
 /**
  * Class Link
  *
- * @package ObjectivePHP\Gateway\Mysql
+ * @package ObjectivePHP\Gateway\MySql
  */
 class Link
 {
