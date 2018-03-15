@@ -10,12 +10,18 @@ use Aura\SqlQuery\Mysql\Select;
 use Aura\SqlQuery\Mysql\Update;
 use Aura\SqlQuery\QueryInterface;
 use Aura\SqlQuery\Quoter;
-use ObjectivePHP\Gateway\AbstractPaginableGateway;
-use ObjectivePHP\Gateway\Entity\EntityInterface;
+use ObjectivePHP\Gateway\AbstractGateway;
+use ObjectivePHP\Gateway\Exception\GatewayException;
 use ObjectivePHP\Gateway\Exception\NoResultException;
+use ObjectivePHP\Gateway\GatewayInterface;
+use ObjectivePHP\Gateway\Model\Relation\HasMany;
+use ObjectivePHP\Gateway\Model\Relation\HasOne;
+use ObjectivePHP\Gateway\Model\Relation\Relation;
 use ObjectivePHP\Gateway\MySql\Exception\ExecuteException;
 use ObjectivePHP\Gateway\MySql\Exception\MySqlGatewayException;
 use ObjectivePHP\Gateway\MySql\Exception\PrepareException;
+use ObjectivePHP\Gateway\MySql\Identifier\AggregateIdentifiers;
+use ObjectivePHP\Gateway\MySql\Identifier\Identifier;
 use ObjectivePHP\Gateway\Projection\ProjectionInterface;
 use ObjectivePHP\Gateway\ResultSet\Descriptor\ResultSetDescriptorInterface;
 use ObjectivePHP\Gateway\ResultSet\PaginatedResultSet;
@@ -28,12 +34,53 @@ use ObjectivePHP\Gateway\ResultSet\ResultSetInterface;
  *
  * @package Fei\ApiServer\Gateway
  */
-abstract class AbstractMySqlGateway extends AbstractPaginableGateway
+abstract class AbstractMySqlGateway extends AbstractGateway
 {
     /**
      * @var Link[]
      */
     protected $links;
+
+    /**
+     * @var string
+     */
+    protected $relation;
+
+    /**
+     * @var AggregateIdentifiers
+     */
+    protected $identifiers;
+
+    /**
+     * @var \mysqli
+     */
+    protected $currentParentLink;
+
+    /**
+     * @var array;
+     */
+    protected $persistedEntity = [];
+
+    /**
+     * AbstractMySqlGateway constructor.
+     *
+     * @param string|null $entityClass
+     * @param string|null $relation
+     */
+    public function __construct(string $entityClass = null, string $relation = null)
+    {
+        if (!is_null($relation)) {
+            $this->setRelation($relation);
+        }
+
+        $this->setIdentifiers(new AggregateIdentifiers());
+
+        parent::__construct($entityClass);
+
+        if (!$this->getIdentifiers()->count()) {
+            $this->registerIdentifiers(new Identifier());
+        }
+    }
 
     /**
      * Add a mysqli connection link
@@ -72,26 +119,104 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
         return $links;
     }
 
+    /**
+     * Get Relation
+     *
+     * @return string
+     */
+    public function getRelation(): string
+    {
+        return $this->relation;
+    }
+
+    /**
+     * Set Relation
+     *
+     * @param string $relation
+     *
+     * @return $this
+     */
+    public function setRelation(string $relation)
+    {
+        $this->relation = $relation;
+
+        return $this;
+    }
+
+    /**
+     * Get Identifier
+     *
+     * @return AggregateIdentifiers
+     */
+    public function getIdentifiers(): AggregateIdentifiers
+    {
+        return $this->identifiers;
+    }
+
+    /**
+     * Set Identifiers
+     *
+     * @param AggregateIdentifiers $identifiers
+     */
+    public function setIdentifiers(AggregateIdentifiers $identifiers)
+    {
+        $this->identifiers = $identifiers;
+    }
+
+    /**
+     * Register an identifier
+     *
+     * @param Identifier $identifier
+     *
+     * @return $this
+     */
+    public function registerIdentifiers(Identifier $identifier)
+    {
+        $this->identifiers[] = $identifier;
+
+        return $this;
+    }
+
+    /**
+     * Get ParentLink
+     *
+     * @return \mysqli|null
+     */
+    public function getCurrentParentLink()
+    {
+        return $this->currentParentLink;
+    }
+
+    /**
+     * Set ParentLink
+     *
+     * @param \mysqli $currentParentLink
+     *
+     * @return $this
+     */
+    public function setCurrentParentLink(\mysqli $currentParentLink)
+    {
+        $this->currentParentLink = $currentParentLink;
+
+        return $this;
+    }
 
     /**
      * {@inheritdoc}
      */
-    public function fetchOne($key): EntityInterface
+    public function fetchOne($key)
     {
-        $class = $this->getEntityClass() ? $this->getEntityClass() : $this->getDefaultEntityClass();
+        $class = $this->getEntityClass();
 
         foreach ($this->getLinks(self::FETCH_ONE) as $link) {
-            /** @var EntityInterface $entity */
             $entity = new $class;
 
-            $collection = $entity->getEntityCollection() != EntityInterface::DEFAULT_ENTITY_COLLECTION
-                ? $entity->getEntityCollection()
-                : $this->getDefaultEntityCollection();
+            $collection = $this->getRelation();
 
             $query = (new Select(new Quoter("`", "`")))
                 ->cols(['*'])
                 ->from($collection)
-                ->where($entity->getEntityIdentifier() . ' = ?', $key);
+                ->where($this->getIdentifiers()[0] . ' = ?', $key); // FIXME Identifier is an array here
 
             try {
                 $resultSet = $this->query($query, $link);
@@ -110,58 +235,98 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
     /**
      * {@inheritdoc}
      */
-    public function persist(EntityInterface ...$entities): bool
+    public function persist(...$entities)
     {
-        $result = true;
-
         $links = $this->getLinks(self::PERSIST);
 
         if (!$links) {
             throw new MySqlGatewayException('No link found to persist entity');
         }
 
-        foreach ($links as $link) {
-            $link->begin_transaction();
+        foreach ($entities as $entity) {
+            if ($this->isPersisted($entity)) {
+                continue;
+            }
 
-            foreach ($entities as $entity) {
-                $colsToRemove = [];
+            $data = $this->getHydrator()->extract($entity);
 
-                $collection = $entity->getEntityCollection() != EntityInterface::DEFAULT_ENTITY_COLLECTION
-                    ? $entity->getEntityCollection()
-                    : $this->getDefaultEntityCollection();
+            $colsToRemove = [];
 
-                if ($entity->isNew()) {
-                    $query = (new Insert(new Quoter("`", "`")))
-                        ->into($collection);
+            $relation = $this->getRelation();
 
-                    if (is_null($entity[$entity->getEntityIdentifier()])) {
-                        $colsToRemove[] = $entity->getEntityIdentifier();
+            $isNew = $this->isNew($data);
+
+            if ($isNew) {
+                $query = (new Insert(new Quoter("`", "`")))
+                    ->into($relation);
+
+                /** @var Identifier $identifier */
+                foreach ($this->getIdentifiers() as $identifier) {
+                    if (array_key_exists($identifier->getField(), $data)
+                        && is_null($data[$identifier->getField()])
+                    ) {
+                        $colsToRemove[] = $identifier->getField();
                     }
+                }
+            } else {
+                $query = (new Update(new Quoter("`", "`")))
+                    ->table($relation);
+
+                /** @var Identifier $identifier */
+                foreach ($this->getIdentifiers() as $identifier) {
+                    $colsToRemove[] = $identifier->getField();
+                    $query->where($identifier->getField() . ' = ?', $data[$identifier->getField()]);
+                }
+            }
+
+            $colsToRemove = array_merge($colsToRemove, array_keys($this->getRelatedFields(HasMany::class)));
+
+            $fields = array_diff(array_keys($data), $colsToRemove);
+
+            /**
+             * @var string $field
+             * @var Relation $relation
+             */
+            foreach ($this->getRelatedFields(HasOne::class) as $field => $relation) {
+                $relatedEntityClass = $relation->getEntityClass();
+
+                if (array_key_exists($field, $data) && $data[$field] instanceof $relatedEntityClass) {
+                    /** @var GatewayInterface $gateway */
+                    $gateway = $this->getGatewaysFactory()->get($relation->getEntityClass());
+
+                    if ($gateway instanceof AbstractMySqlGateway) {
+                        $dataRelated = $gateway->getHydrator()->extract($data[$field]);
+
+                        /** @var Identifier $identifier */
+                        foreach ($gateway->getIdentifiers() as $identifier) {
+                            $data[$gateway->relation . '_' . $identifier->getField()]
+                                = $dataRelated[$identifier->getField()];
+                        }
+                    }
+                }
+
+                $fields = array_diff(array_keys($data), [$field]);
+            }
+
+            $query->cols($fields);
+
+            foreach ($fields as $field) {
+                $value = $data[$field];
+                if ($value instanceof \DateTime) {
+                    $query->bindValue($field, $value->format('Y-m-d H:i:s'));
                 } else {
-                    $query = (new Update(new Quoter("`", "`")))
-                        ->table($collection);
-
-                    $colsToRemove[] = $entity->getEntityIdentifier();
+                    $query->bindValue($field, $value);
                 }
+            }
 
-                // skip cols handled by delegates
-                $colsToRemove = array_merge($colsToRemove, array_keys($this->getDelegatePersisters()));
+            foreach ($links as $link) {
+                $mustCommit = true;
 
-                $fields = array_diff($entity->getEntityFields(), $colsToRemove);
+                if ($this->getCurrentParentLink() !== $link) {
+                    $link->autocommit(false);
+                    $link->begin_transaction();
 
-                $query->cols($fields);
-
-                foreach ($fields as $field) {
-                    $value = $entity[$field];
-                    if ($value instanceof \DateTime) {
-                        $query->bindValue($field, $value->format('Y-m-d H:i:s'));
-                    } else {
-                        $query->bindValue($field, $entity[$field]);
-                    }
-                }
-
-                if (!$entity->isNew()) {
-                    $query->where($entity->getEntityIdentifier() . ' = ?', $entity[$entity->getEntityIdentifier()]);
+                    $mustCommit = false;
                 }
 
                 try {
@@ -171,20 +336,43 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
                     throw $e;
                 }
 
-                if ($entity->isNew()) {
-                    $entity[$entity->getEntityIdentifier()] = $link->insert_id;
+                if ($isNew) {
+                    /** @var Identifier $identifier */
+                    foreach ($this->getIdentifiers() as $identifier) {
+                        if ($identifier->isAutoIncrement()) {
+                            $data[$identifier->getField()] = $link->insert_id;
+                        }
+                    }
                 }
 
-                // trigger delegates
-                foreach ($this->getDelegatePersisters() as $field => $persister) {
-                    $persister($entity[$field], $entity, $this);
+                $this->getHydrator()->hydrate($data, $entity);
+
+                $this->markAsPersisted($entity);
+
+                /**
+                 * @var string $field
+                 * @var Relation $relation
+                 */
+                foreach ($this->getRelatedFields() as $field => $relation) {
+                    /** @var GatewayInterface $gateway */
+                    $gateway = $this->getGatewaysFactory()->get($relation->getEntityClass());
+
+                    if ($gateway instanceof AbstractMySqlGateway) {
+                        $gateway->setCurrentParentLink($link);
+                    }
+
+                    if ($relation instanceof HasMany) {
+                        $gateway->persist(...$data[$field]);
+                    } elseif ($relation instanceof HasOne) {
+                        $gateway->persist($data[$field]);
+                    }
+                }
+
+                if ($mustCommit) {
+                    $link->commit();
                 }
             }
-
-            $result = $link->commit();
         }
-
-        return $result;
     }
 
     /**
@@ -197,6 +385,7 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
      *
      * @throws ExecuteException
      * @throws PrepareException
+     * @throws GatewayException
      */
     public function query($query, \mysqli $link)
     {
@@ -274,7 +463,7 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
     /**
      * {@inheritdoc}
      */
-    public function delete(EntityInterface ...$entities)
+    public function delete(...$entities)
     {
         $result = true;
 
@@ -421,5 +610,59 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
         }
 
         return $resultSet;
+    }
+
+    /**
+     * Tells if an entity is persisted or not
+     *
+     * @param array $data
+     *
+     * @return bool
+     *
+     * @throws MySqlGatewayException If identifier is not consistent
+     */
+    protected function isNew(array $data): bool
+    {
+        $isNew = true;
+        $hasNullIdentifier = false;
+
+        /** @var Identifier $identifier */
+        foreach ($this->getIdentifiers() as $identifier) {
+            if (array_key_exists($identifier->getField(), $data) && !is_null($data[$identifier->getField()])) {
+                if ($hasNullIdentifier) {
+                    throw new MySqlGatewayException('The identifiers form composite identifier must all be null');
+                }
+
+                $isNew = false;
+            } else {
+                $hasNullIdentifier = true;
+            }
+        }
+
+        return $isNew;
+    }
+
+    /**
+     * Tells if an entity is already persisted
+     *
+     * @param object $entity
+     *
+     * @return bool
+     */
+    protected function isPersisted($entity): bool
+    {
+        return in_array($entity, $this->persistedEntity);
+    }
+
+    /**
+     * Mark an entity as persisted
+     *
+     * @param $entity
+     */
+    protected function markAsPersisted($entity)
+    {
+        if (!$this->isPersisted($entity)) {
+            $this->persistedEntity[] = clone $entity;
+        }
     }
 }
