@@ -224,10 +224,6 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
                 foreach ($query->getBindValues() as $value) {
                     if (is_bool($value)) {
                         $types .= 'i';
-                    } elseif (is_int($value) || (is_string($value) && preg_match('/^(\d+)$/', $value))) {
-                        $types .= 'i';
-                    } elseif (is_numeric($value)) {
-                        $types .= 'd';
                     } else {
                         $types .= 's';
                     }
