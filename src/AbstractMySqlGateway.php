@@ -364,7 +364,11 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
         $quoter = new Quoter('`', '`');
 
         if ($query instanceof Update) {
+            /** @var Update $query */
             $query->table($resultSetDescriptor->getCollectionName());
+        } elseif ($query instanceof Delete) {
+            /** @var Delete $query */
+            $query->from($resultSetDescriptor->getCollectionName());
         } else {
             $query->from($resultSetDescriptor->getCollectionName());
             $query->cols(['*']);
