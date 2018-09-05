@@ -17,6 +17,11 @@
       "role": "lead"
     }
   ],
+  "config": {
+    "platform": {
+      "php": "7.0.18"
+    }
+  },
   "require": {
     "php": ">=7.0",
     "objective-php/gateway": "^1.0.0",
