@@ -24,7 +24,7 @@
   },
   "require": {
     "php": ">=7.0",
-    "objective-php/gateway": "^1.0.0",
+    "objective-php/gateway": "^1.2",
     "aura/sqlquery": "^2.7"
   },
   "require-dev": {
