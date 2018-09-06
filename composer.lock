@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#composer-lock-the-lock-file",
         "This file is @generated automatically"
     ],
-    "content-hash": "a017ab949767df1a3b4706c30e9674d8",
+    "content-hash": "a17cbc78cfb7b288b416106e797bc0d7",
     "packages": [
         {
             "name": "aura/sqlquery",
@@ -322,16 +322,16 @@
         },
         {
             "name": "objective-php/gateway",
-            "version": "v1.1.0",
+            "version": "v1.2.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/objective-php/gateway.git",
-                "reference": "556fe336e61ce5a148552f368f9586f9c1641a84"
+                "reference": "ed3b9d2ce397e2d771dc98d551b80bad57a9faf4"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/objective-php/gateway/zipball/556fe336e61ce5a148552f368f9586f9c1641a84",
-                "reference": "556fe336e61ce5a148552f368f9586f9c1641a84",
+                "url": "https://api.github.com/repos/objective-php/gateway/zipball/ed3b9d2ce397e2d771dc98d551b80bad57a9faf4",
+                "reference": "ed3b9d2ce397e2d771dc98d551b80bad57a9faf4",
                 "shasum": ""
             },
             "require": {
@@ -375,7 +375,7 @@
                 "database",
                 "objective php"
             ],
-            "time": "2018-08-29T09:36:50+00:00"
+            "time": "2018-09-05T09:50:57+00:00"
         },
         {
             "name": "objective-php/invokable",
