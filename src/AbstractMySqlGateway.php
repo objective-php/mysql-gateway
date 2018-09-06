@@ -108,6 +108,71 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
     }
 
     /**
+     * @param EntityInterface $entity
+     *
+     * @return bool
+     * @throws MySqlGatewayException
+     * @throws \Exception
+     */
+    public function create(EntityInterface $entity): bool
+    {
+        $links = $this->getLinks(self::PERSIST);
+        $result = true;
+
+        if (!$links) {
+            throw new MySqlGatewayException('No link found to create entity');
+        }
+
+        foreach ($links as $link) {
+            $link->begin_transaction();
+
+            $collection = $entity->getEntityCollection() !== EntityInterface::DEFAULT_ENTITY_COLLECTION
+                ? $entity->getEntityCollection()
+                : $this->getDefaultEntityCollection();
+
+            $query = (new Insert(new Quoter('`', '`')))->into($collection);
+
+
+            if (!$this->getOptions()['id']) {
+                throw new MySqlGatewayException('Missing ID to create an entity. Did you forget to call Metagateway::setNewId ?');
+            }
+            
+            $entity[$entity->getEntityIdentifier()] = $this->getOptions()['id'];
+
+            // skip cols handled by delegates
+            $colsToRemove = array_keys($this->getDelegatePersisters());
+            $fields = array_diff($entity->getEntityFields(), $colsToRemove);
+
+            $query->cols($fields);
+
+            foreach ($fields as $field) {
+                $value = $entity[$field];
+                if ($value instanceof \DateTime) {
+                    $query->bindValue($field, $value->format('Y-m-d H:i:s'));
+                } else {
+                    $query->bindValue($field, $entity[$field]);
+                }
+            }
+
+            try {
+                $this->query($query, $link);
+            } catch (\Exception $e) {
+                $link->rollback();
+                throw $e;
+            }
+
+            // trigger delegates
+            foreach ($this->getDelegatePersisters() as $field => $persister) {
+                $persister($entity[$field], $entity, $this);
+            }
+
+            $result = $link->commit();
+        }
+
+        return $result;
+    }
+
+    /**
      * {@inheritdoc}
      */
     public function persist(EntityInterface ...$entities): bool
