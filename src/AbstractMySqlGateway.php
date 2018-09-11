@@ -366,6 +366,7 @@ abstract class AbstractMySqlGateway extends AbstractPaginableGateway
                     $this->query($query, $link);
                 } catch (\Exception $e) {
                     $link->rollback();
+                    throw $e;
                 }
             }
 
